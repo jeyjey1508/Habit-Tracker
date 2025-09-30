@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Monat - Habit Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header row-between">
+    <div>
+      <h1 class="h1">Monatsübersicht</h1>
+      <p class="muted">Gesamterfüllung: <strong id="overallRate">{{ stats['overall_rate']|round(1) }}%</strong></p>
+    </div>
+    <div class="month-nav">
+      <a id="prevLink" class="btn-secondary" href="#">←</a>
+      <span class="month-label" id="monthLabel">{{ month }}.{{ year }}</span>
+      <a id="nextLink" class="btn-secondary" href="#">→</a>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card-sub">
+      <h3 class="h3">Überblick</h3>
+      <!-- NEU -->
+    <div class="chart-wrap">
+        <canvas id="monthChart"></canvas>
+    </div>
+  
+    </div>
+
+    <div class="card-sub">
+      <h3 class="h3">Gewohnheiten</h3>
+      <ul class="stats-list">
+        {% for s in stats['habits'] %}
+        <li class="stat-item">
+          <div class="stat-main">
+            <strong>{{ s['habit'].name }}</strong>
+            {% if s['habit'].category %}<span class="badge">{{ s['habit'].category }}</span>{% endif %}
+          </div>
+          <div class="stat-sub">
+            Rate: {{ s['rate']|round(1) }}% · Streak: {{ s['current_streak'] }} · Max: {{ s['longest_streak'] }} · Trend:
+            <span class="{{ 'pos' if s['trend']>=0 else 'neg' }}">{{ '%+.1f'|format(s['trend']) }}%</span>
+          </div>
+          <div class="mini-heat" data-habit-id="{{ s['habit'].id }}"></div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Alle Serverwerte als valides JS serialisieren
+  const YEAR = {{ year|tojson }};
+  const MONTH = {{ month|tojson }};
+  const CALENDAR_DATA = {{ calendar_data|tojson }};
+  const OVERALL = {{ stats['overall_rate']|tojson }};
+
+  // Monat-Label hübsch formatieren
+  (function initLabel(){
+    const ml = document.getElementById('monthLabel');
+    ml.textContent = String(MONTH).padStart(2,'0') + '.' + YEAR;
+  })();
+
+  // Navigation
+  function monthMath(y, m, delta) {
+    const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+    return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 };
+  }
+  (function initNav(){
+    const prev = monthMath(YEAR, MONTH, -1);
+    const next = monthMath(YEAR, MONTH, 1);
+    document.getElementById('prevLink').href = `/month/${prev.year}/${prev.month}`;
+    document.getElementById('nextLink').href = `/month/${next.year}/${next.month}`;
+  })();
+
+  // Daten für Chart
+  function daysInMonth(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+  const DIM = daysInMonth(YEAR, MONTH);
+  const labels = Array.from({length: DIM}, (_, i) => (i+1).toString());
+
+  const perDay = new Array(DIM).fill(0);
+  for (const habitId in CALENDAR_DATA) {
+    const byDate = CALENDAR_DATA[habitId];
+    for (const [ds, done] of Object.entries(byDate)) {
+      if (!done) continue;
+      const d = new Date(ds + "T00:00:00Z");
+      if (d.getUTCFullYear() === YEAR && (d.getUTCMonth()+1) === MONTH) {
+        perDay[d.getUTCDate()-1] += 1;
+      }
+    }
+  }
+
+  // Chart.js
+// NEU: vorhandene Instanz zerstören + in fixiertem Wrapper rendern
+    const ctx = document.getElementById('monthChart').getContext('2d');
+    if (window.__monthChart) {
+    try { window.__monthChart.destroy(); } catch (_) {}
+    }
+    window.__monthChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Erledigte Gewohnheiten', data: perDay }] },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false, // wichtig für festen Wrapper
+        scales: {
+        x: { title: { display: true, text: 'Tag' } },
+        y: { title: { display: true, text: 'Anzahl' }, beginAtZero: true, ticks: { precision: 0 } }
+        },
+        plugins: { legend: { display: false } }
+    }
+    });
+
+
+  // Mini-Heatmaps pro Habit
+  function makeHeat(container, dataMap) {
+    const grid = document.createElement('div');
+    grid.className = 'heat-grid';
+    for (let day = 1; day <= DIM; day++) {
+      const ds = `${YEAR}-${String(MONTH).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      const cell = document.createElement('div');
+      cell.className = 'heat-cell ' + (dataMap[ds] ? 'hit' : '');
+      cell.title = `${ds} - ${dataMap[ds] ? '✓' : '—'}`;
+      grid.appendChild(cell);
+    }
+    container.replaceChildren(grid);
+  }
+  document.querySelectorAll('.mini-heat').forEach(div => {
+    const id = div.getAttribute('data-habit-id');
+    makeHeat(div, CALENDAR_DATA[id] || {});
+  });
+
+  // Safety
+  document.getElementById('overallRate').textContent = Number(OVERALL).toFixed(1) + '%';
+</script>
+{% endblock %}

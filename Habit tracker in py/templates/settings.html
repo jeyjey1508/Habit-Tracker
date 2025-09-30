@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen - Habit Tracker{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="settings-container">
+    <h2>Gewohnheiten verwalten</h2>
+
+    <div class="add-habit-form">
+      <h3>Neue Gewohnheit</h3>
+      <form id="addHabitForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="form-group">
+          <label for="habitName">Name</label>
+          <input type="text" id="habitName" name="name" required placeholder="z.B. Meditation">
+        </div>
+
+        <div class="form-group">
+          <label for="habitCategory">Kategorie (optional)</label>
+          <input type="text" id="habitCategory" name="category" placeholder="z.B. Gesundheit">
+        </div>
+
+        <div class="form-group">
+          <label for="habitEmoji">Emoji (optional)</label>
+          <input type="text" id="habitEmoji" name="emoji" placeholder="z. B. 🧘" maxlength="8">
+          <div class="emoji-picker" id="emojiPicker">
+            <button type="button" class="emoji-btn">✅</button>
+            <button type="button" class="emoji-btn">🏃</button>
+            <button type="button" class="emoji-btn">🍎</button>
+            <button type="button" class="emoji-btn">💧</button>
+            <button type="button" class="emoji-btn">📚</button>
+            <button type="button" class="emoji-btn">⏰</button>
+            <button type="button" class="emoji-btn">🧘</button>
+            <button type="button" class="emoji-btn">🚴</button>
+            <button type="button" class="emoji-btn">🧠</button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn-primary">Hinzufügen</button>
+      </form>
+    </div>
+
+    <div class="habits-manager">
+      <h3>Vorhandene Gewohnheiten</h3>
+      <div id="habitsList" class="sortable-list">
+        {% for habit in habits %}
+        <div class="habit-manager-item" data-habit-id="{{ habit.id|int }}">
+          <div class="drag-handle" aria-label="Ziehen zum Verschieben">⋮⋮</div>
+
+          <div class="habit-info">
+            {% if habit.emoji %}<span class="habit-emoji-list">{{ habit.emoji }}</span>{% endif %}
+            <span class="habit-name-display">{{ habit.name }}</span>
+            {% if habit.category %}<span class="habit-category-display">{{ habit.category }}</span>{% endif %}
+          </div>
+
+          <div class="habit-actions">
+            <button class="btn-edit"
+              onclick='editHabit({{ habit.id|int }}, {{ habit.name|tojson }}, {{ (habit.category or "")|tojson }}, {{ (habit.emoji or "")|tojson }})'
+              aria-label="Bearbeiten">✎</button>
+            <button class="btn-delete"
+              onclick="deleteHabit({{ habit.id|int }})"
+              aria-label="Löschen">🗑</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <h3>Gewohnheit bearbeiten</h3>
+    <form id="editHabitForm">
+      <input type="hidden" id="editHabitId">
+
+      <div class="form-group">
+        <label for="editHabitName">Name</label>
+        <input type="text" id="editHabitName" required>
+      </div>
+
+      <div class="form-group">
+        <label for="editHabitCategory">Kategorie</label>
+        <input type="text" id="editHabitCategory">
+      </div>
+
+      <div class="form-group">
+        <label for="editHabitEmoji">Emoji</label>
+        <input type="text" id="editHabitEmoji" maxlength="8" placeholder="z. B. 🧘">
+        <div class="emoji-picker" id="emojiPickerEdit">
+          <button type="button" class="emoji-btn">✅</button>
+          <button type="button" class="emoji-btn">🏃</button>
+          <button type="button" class="emoji-btn">🍎</button>
+          <button type="button" class="emoji-btn">💧</button>
+          <button type="button" class="emoji-btn">📚</button>
+          <button type="button" class="emoji-btn">⏰</button>
+          <button type="button" class="emoji-btn">🧘</button>
+          <button type="button" class="emoji-btn">🚴</button>
+          <button type="button" class="emoji-btn">🧠</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="submit" class="btn-primary">Speichern</button>
+        <button type="button" class="btn-secondary" onclick="closeModal()">Abbrechen</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+/* ========== Emoji-Picker Bindings ========== */
+function bindEmojiPicker(containerSelector, inputSelector){
+  const container = document.querySelector(containerSelector);
+  if (!container) return;
+  container.querySelectorAll('.emoji-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const input = document.querySelector(inputSelector);
+      input.value = btn.textContent.trim();
+      input.focus();
+    });
+  });
+}
+bindEmojiPicker('#emojiPicker', '#habitEmoji');
+bindEmojiPicker('#emojiPickerEdit', '#editHabitEmoji');
+
+/* ========== Add Habit ========== */
+document.getElementById('addHabitForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const formData = new FormData(e.target);
+
+  const response = await fetch('/api/habits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+    body: JSON.stringify({
+      name: formData.get('name'),
+      category: formData.get('category') || null,
+      emoji: formData.get('emoji') || null
+    })
+  });
+  if (response.ok) location.reload();
+});
+
+/* ========== Edit Habit ========== */
+function editHabit(id, name, category, emoji) {
+  document.getElementById('editHabitId').value = id;
+  document.getElementById('editHabitName').value = name;
+  document.getElementById('editHabitCategory').value = category || '';
+  document.getElementById('editHabitEmoji').value = emoji || '';
+  document.getElementById('editModal').classList.add('active');
+}
+function closeModal() {
+  document.getElementById('editModal').classList.remove('active');
+}
+document.getElementById('editHabitForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('editHabitId').value;
+  const name = document.getElementById('editHabitName').value;
+  const category = document.getElementById('editHabitCategory').value;
+  const emoji = document.getElementById('editHabitEmoji').value;
+
+  const response = await fetch(`/api/habits/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+    body: JSON.stringify({ name, category, emoji })
+  });
+  if (response.ok) location.reload();
+});
+
+/* ========== Delete Habit ========== */
+async function deleteHabit(id) {
+  if (!confirm('Möchten Sie diese Gewohnheit wirklich löschen?')) return;
+  const response = await fetch(`/api/habits/${id}`, {
+    method: 'DELETE',
+    headers: { 'X-CSRFToken': csrfToken }
+  });
+  if (response.ok) location.reload();
+}
+
+/* ========== Drag & Drop Reorder ========== */
+let draggedElement = null;
+document.querySelectorAll('.habit-manager-item').forEach(item => {
+  item.setAttribute('draggable', true);
+
+  item.addEventListener('dragstart', () => {
+    draggedElement = item;
+    item.classList.add('dragging');
+  });
+  item.addEventListener('dragend', () => item.classList.remove('dragging'));
+
+  item.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const after = getDragAfterElement(document.getElementById('habitsList'), e.clientY);
+    if (after == null) document.getElementById('habitsList').appendChild(draggedElement);
+    else document.getElementById('habitsList').insertBefore(draggedElement, after);
+  });
+
+  item.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    await updatePositions();
+  });
+});
+
+function getDragAfterElement(container, y) {
+  const els = [...container.querySelectorAll('.habit-manager-item:not(.dragging)')];
+  return els.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) return { offset, element: child };
+    return closest;
+  }, { offset: Number.NEGATIVE_INFINITY }).element;
+}
+
+async function updatePositions() {
+  const items = document.querySelectorAll('.habit-manager-item');
+  const updates = [];
+  items.forEach((item, index) => {
+    const id = item.dataset.habitId;
+    updates.push(fetch(`/api/habits/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+      body: JSON.stringify({ position: index })
+    }));
+  });
+  await Promise.all(updates);
+}
+</script>
+{% endblock %}

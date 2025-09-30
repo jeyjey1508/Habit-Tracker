@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Heute - Habit Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h1 class="h1">Heute: {{ today.strftime('%A, %d.%m.%Y') }}</h1>
+      <p class="muted">Markiere erledigte Gewohnheiten.</p>
+    </div>
+
+    <div class="progress-ring" aria-label="Heutiger Fortschritt">
+        <svg class="progress-svg" viewBox="0 0 120 120" aria-hidden="true">
+          <!-- Hintergrundkreis -->
+          <circle class="progress-bg" cx="60" cy="60" r="54"></circle>
+          <!-- Fortschrittskreis (animiert) -->
+          <circle class="progress-bar" cx="60" cy="60" r="54"></circle>
+        </svg>
+        <div class="progress-center">
+          <div class="progress-value" id="progressValue">{{ today_rate|round(0)|int }}%</div>
+          <div class="progress-label">heute</div>
+        </div>
+      </div>
+      
+
+  <ul class="habit-list" id="habitList" data-date="{{ today.isoformat() }}">
+    {% for habit in habits %}
+    {% set done = entries.get(habit.id, False) %}
+    <li class="habit-item {{ 'completed' if done }}" data-habit-id="{{ habit.id|int }}">
+      <button class="habit-checkbox"
+                onclick="toggleHabit({{ habit.id|int }}, '{{ today.isoformat() }}', this)"
+                aria-label="{{ habit.name }} {{ 'erledigt' if done else 'nicht erledigt' }}"
+                aria-pressed="{{ 'true' if done else 'false' }}">
+        {% if habit.emoji %}
+            <span class="habit-emoji" aria-hidden="true">{{ habit.emoji }}</span>
+        {% else %}
+            <span class="checkbox-visual" aria-hidden="true">✓</span>
+        {% endif %}
+        </button>
+
+      <div class="habit-info">
+        <div class="habit-name">{{ habit.name }}</div>
+        {% if habit.category %}<div class="habit-category">{{ habit.category }}</div>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // SVG-Progress Setup
+    const RADIUS = 54;                                   // muss zum r im SVG passen
+    const CIRC = 2 * Math.PI * RADIUS;                   // Umfang
+    const bar = document.querySelector('.progress-bar'); // animierter Kreis
+  
+    if (bar) {
+      bar.style.strokeDasharray = CIRC.toString();
+      bar.style.strokeDashoffset = CIRC.toString(); // 0% initial
+    }
+  
+    function setProgress(pct){
+      const clamped = Math.max(0, Math.min(100, pct));
+      const offset = CIRC * (1 - clamped / 100);
+      if (bar) bar.style.strokeDashoffset = offset.toString();
+      document.getElementById('progressValue').textContent = Math.round(clamped) + '%';
+    }
+  
+    // Wird von app.js nach Toggle aufgerufen (wir überschreiben es hier bewusst)
+    function updateProgress() {
+      const items = Array.from(document.querySelectorAll('.habit-item'));
+      if (!items.length) return;
+      const done = items.filter(i => i.classList.contains('completed')).length;
+      const pct = (done / items.length) * 100;
+      setProgress(pct);
+    }
+  
+    // initialen Serverwert animiert einstellen (kleine Verzögerung = softer)
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => setProgress({{ today_rate|round(0)|int }}), 50);
+    });
+  </script>
+  
+{% endblock %}

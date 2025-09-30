@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}Habit Tracker{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- CSRF für Fetch-Requests -->
+  <meta name="csrf-token" content="{{ csrf_token() }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <!-- Chart.js (für Monatsansicht) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="container header-inner">
+      <a class="brand" href="{{ url_for('index') }}">🗓️ Habit Tracker</a>
+      <nav class="nav">
+        <a href="{{ url_for('index') }}">Heute</a>
+        <a href="{{ url_for('month_view') }}">Monat</a>
+        <a href="{{ url_for('settings') }}">Einstellungen</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="app-footer">
+    <div class="container">
+      <small>Made from Jeremy👑, Musab, Najim and Maria</small>
+    </div>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
