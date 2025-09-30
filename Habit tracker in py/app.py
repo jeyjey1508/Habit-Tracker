@@ -181,39 +181,55 @@ def index():
         today_rate=today_rate
     )
 
-@app.route('/month')
-@app.route('/month/<int:year>/<int:month>')
-def month_view(year=None, month=None):
-    today = datetime.now(TIMEZONE)
+@app.route('/week')
+@app.route('/week/<int:year>/<int:week>')
+def week_view(year=None, week=None):
+    today = datetime.now(TIMEZONE).date()
     if year is None:
-        year = today.year
-    if month is None:
-        month = today.month
+        year = today.isocalendar()[0]  # aktuelles Jahr
+    if week is None:
+        week = today.isocalendar()[1]  # aktuelle KW
 
-    stats = StatsService.get_month_stats(year, month)
+    # Wochenanfang (Montag) berechnen
+    first_day = date.fromisocalendar(year, week, 1)
+    last_day = first_day + timedelta(days=6)
 
-    # Kalenderdaten (Keys als ISO-String, nicht datetime.date!)
-    start_date = stats['start_date']
-    end_date = stats['end_date']
-
+    habits = Habit.query.order_by(Habit.position).all()
+    stats = []
     calendar_data = {}
-    for habit_stat in stats['habits']:
-        habit = habit_stat['habit']
+
+    for habit in habits:
         entries = Entry.query.filter(
             Entry.habit_id == habit.id,
-            Entry.date >= start_date,
-            Entry.date <= end_date
+            Entry.date >= first_day,
+            Entry.date <= last_day
         ).all()
+
         calendar_data[habit.id] = {e.date.isoformat(): e.completed for e in entries}
 
+        total_days = 7
+        completed = sum(1 for e in entries if e.completed)
+        rate = (completed / total_days * 100) if total_days > 0 else 0
+
+        stats.append({
+            'habit': habit,
+            'rate': round(rate, 1)
+        })
+
+    overall_rate = sum(s['rate'] for s in stats) / len(stats) if stats else 0
+
     return render_template(
-        'month.html',
+        'week.html',
         stats=stats,
         calendar_data=calendar_data,
         year=year,
-        month=month,
-        today=today.date()
+        week=week,
+        overall_rate=round(overall_rate, 1),
+        today=today,
+        start_date=first_day,
+        end_date=last_day
     )
+
 
 @app.route('/settings')
 def settings():
@@ -346,3 +362,4 @@ def init_db():
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
+
