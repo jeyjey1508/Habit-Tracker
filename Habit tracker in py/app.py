@@ -144,6 +144,19 @@ class StatsService:
 # =========================
 # Migration Helpers (SQLite)
 # =========================
+
+@app.before_request
+def select_user_from_query():
+    # ?u=Name erlaubt per URL ein Profil zu setzen/wechseln, z.B. /?u=Maria
+    u = request.args.get('u')
+    if u:
+        session['user_name'] = u
+
+def current_user():
+    name = session.get('user_name', 'default')
+    return get_or_create_user(name)
+
+
 def column_exists(table_name, column_name):
     with app.app_context():
         rows = db.session.execute(text(f"PRAGMA table_info({table_name})")).mappings().all()
@@ -158,15 +171,45 @@ def migrate_db():
             db.session.commit()
             print("✓ DB migrated: added 'emoji' column to habits")
 
+def user_by_name(name):
+    return User.query.filter_by(name=name).first()
+
+def get_or_create_user(name):
+    u = user_by_name(name)
+    if not u:
+        u = User(name=name)
+        db.session.add(u)
+        db.session.commit()
+    return u
+
+def migrate_db_multitenant():
+    with app.app_context():
+        # users-Tabelle anlegen, falls nicht vorhanden
+        db.create_all()
+        cols = db.session.execute(text("PRAGMA table_info(habits)")).mappings().all()
+        colnames = {r['name'] for r in cols}
+        if 'user_id' not in colnames:
+            # Spalte hinzufügen
+            db.session.execute(text("ALTER TABLE habits ADD COLUMN user_id INTEGER"))
+            db.session.commit()
+            # Default-User anlegen
+            default_user = get_or_create_user('default')
+            # existierende Habits diesem User zuordnen
+            db.session.execute(text("UPDATE habits SET user_id = :uid WHERE user_id IS NULL"), {'uid': default_user.id})
+            db.session.commit()
+            print("✓ DB migrated: added habits.user_id and set to default user")
+
+
 # =========================
 # Routes
 # =========================
 @app.route('/')
 def index():
-    # today = datetime.now(TIMEZONE).date()   # echtes heutiges Datum
-    today = date(2025, 9, 28)  # <-- Fake-Datum zum Testen
+    today = datetime.now(TIMEZONE).date()
+    u = current_user()
+    habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
+    # ... Rest bleibt
 
-    habits = Habit.query.order_by(Habit.position).all()
 
 
 
@@ -242,8 +285,10 @@ def week_view(year=None, week=None):
 
 @app.route('/settings')
 def settings():
-    habits = Habit.query.order_by(Habit.position).all()
+    u = current_user()
+    habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
     return render_template('settings.html', habits=habits)
+
 
 # =========================
 # API Routes
@@ -276,30 +321,30 @@ def api_toggle():
 
 @app.route('/api/habits', methods=['GET'])
 def api_get_habits():
-    habits = Habit.query.order_by(Habit.position).all()
+    u = current_user()
+    habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
     return jsonify([{
-        'id': h.id,
-        'name': h.name,
-        'category': h.category,
-        'position': h.position,
-        'emoji': h.emoji
+        'id': h.id, 'name': h.name, 'category': h.category,
+        'position': h.position, 'emoji': h.emoji
     } for h in habits])
+
 
 @app.route('/api/habits', methods=['POST'])
 def api_create_habit():
+    u = current_user()
     data = request.get_json()
-    max_position = db.session.query(db.func.max(Habit.position)).scalar() or -1
-
+    max_pos = db.session.query(db.func.max(Habit.position)).filter(Habit.user_id==u.id).scalar() or -1
     habit = Habit(
         name=data['name'],
         category=data.get('category'),
         emoji=data.get('emoji'),
-        position=max_position + 1
+        position=max_pos + 1,
+        user_id=u.id
     )
     db.session.add(habit)
     db.session.commit()
-
     return jsonify({'success': True, 'id': habit.id})
+
 
 @app.route('/api/habits/<int:habit_id>', methods=['PUT'])
 def api_update_habit(habit_id):
@@ -345,25 +390,18 @@ def api_month_stats(year, month):
 # =========================
 def init_db():
     with app.app_context():
-        # Tabellen neu anlegen (falls DB frisch ist)
         db.create_all()
-        # Bestehende DB updaten, bevor wir irgendetwas queryen
-        migrate_db()
+        migrate_db()              # falls du schon hattest (emoji etc.)
+        migrate_db_multitenant()  # ⬅️ NEU
 
-        # Default-Habits nur anlegen, wenn noch keine existieren
+        # Default-Habits nur anlegen, wenn gar keine Habits existieren
         if Habit.query.count() == 0:
-            default_habits = [
-                'Meditation',
-                'Sport/Bewegung',
-                'Gesund essen',
-                'Wasser trinken',
-                'Lesen',
-                'Früh aufstehen'
-            ]
-            for i, name in enumerate(default_habits):
-                db.session.add(Habit(name=name, position=i))
+            default_user = get_or_create_user('default')
+            defaults = ['Meditation','Sport/Bewegung','Gesund essen','Wasser trinken','Lesen','Früh aufstehen']
+            for i, name in enumerate(defaults):
+                db.session.add(Habit(name=name, position=i, user_id=default_user.id))
             db.session.commit()
-            print("✓ Default habits created")
+
 
 # =========================
 # Main
@@ -371,5 +409,6 @@ def init_db():
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
 
