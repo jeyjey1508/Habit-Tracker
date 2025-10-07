@@ -8,13 +8,17 @@ import pytz
 from sqlalchemy import text, Index
 from sqlalchemy.exc import OperationalError
 from collections import defaultdict
+import secrets
 
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///habits.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 
 db = SQLAlchemy(app)
 csrf = CSRFProtect(app)
@@ -28,6 +32,7 @@ class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), unique=True, nullable=False)
+    session_token = db.Column(db.String(64), unique=True, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(TIMEZONE))
 
 
@@ -43,7 +48,6 @@ class Habit(db.Model):
     user = db.relationship('User', backref='habits')
     entries = db.relationship('Entry', backref='habit', lazy=True, cascade='all, delete-orphan')
     
-    # Performance-Indizes
     __table_args__ = (
         Index('idx_user_position', 'user_id', 'position'),
     )
@@ -62,12 +66,11 @@ class Entry(db.Model):
 
 
 # =========================
-# Statistics Service (NEU!)
+# Statistics Service
 # =========================
 class StatsService:
     @staticmethod
     def get_completion_rate(habit_id, start_date, end_date):
-        """Berechnet Completion Rate für Zeitraum"""
         entries = Entry.query.filter(
             Entry.habit_id == habit_id,
             Entry.date >= start_date,
@@ -80,7 +83,6 @@ class StatsService:
     
     @staticmethod
     def get_current_streak(habit_id, reference_date=None):
-        """Berechnet aktuelle Streak (aufeinanderfolgende Tage)"""
         if reference_date is None:
             reference_date = datetime.now(TIMEZONE).date()
         
@@ -107,7 +109,6 @@ class StatsService:
     
     @staticmethod
     def get_longest_streak(habit_id):
-        """Findet längste jemals erreichte Streak"""
         entries = Entry.query.filter(
             Entry.habit_id == habit_id,
             Entry.completed == True
@@ -131,7 +132,6 @@ class StatsService:
     
     @staticmethod
     def get_trend(habit_id, reference_date=None):
-        """Berechnet Trend: Vergleich letzte 7 Tage vs. 7 Tage davor"""
         if reference_date is None:
             reference_date = datetime.now(TIMEZONE).date()
         
@@ -154,14 +154,16 @@ def column_exists(table_name, column_name):
         return any(r['name'] == column_name for r in rows)
 
 
-def user_by_name(name):
-    return User.query.filter_by(name=name).first()
+def user_by_token(token):
+    return User.query.filter_by(session_token=token).first()
 
 
-def get_or_create_user(name):
-    u = user_by_name(name)
+def get_or_create_user_by_token(token):
+    u = user_by_token(token)
     if not u:
-        u = User(name=name)
+        # Erstelle anonymen Benutzer mit eindeutigem Namen
+        username = f"user_{token[:8]}"
+        u = User(name=username, session_token=token)
         db.session.add(u)
         db.session.commit()
     return u
@@ -173,6 +175,11 @@ def migrate_db():
             db.session.execute(text("ALTER TABLE habits ADD COLUMN emoji VARCHAR(10)"))
             db.session.commit()
             print("✓ added emoji column")
+        
+        if not column_exists('users', 'session_token'):
+            db.session.execute(text("ALTER TABLE users ADD COLUMN session_token VARCHAR(64)"))
+            db.session.commit()
+            print("✓ added session_token column")
 
 
 def migrate_db_multitenant():
@@ -182,9 +189,6 @@ def migrate_db_multitenant():
         colnames = {r['name'] for r in cols}
         if 'user_id' not in colnames:
             db.session.execute(text("ALTER TABLE habits ADD COLUMN user_id INTEGER"))
-            db.session.commit()
-            default_user = get_or_create_user('default')
-            db.session.execute(text("UPDATE habits SET user_id = :uid WHERE user_id IS NULL"), {'uid': default_user.id})
             db.session.commit()
             print("✓ added user_id to habits")
 
@@ -213,23 +217,29 @@ def _bootstrap_before_each_request():
 
 
 # =========================
-# User Context
+# User Context - FIXED!
 # =========================
 @app.before_request
-def select_user_from_query():
-    u = request.args.get('u')
-    if u:
-        session['user_name'] = u
+def ensure_user_session():
+    """Stelle sicher, dass jeder Benutzer einen eindeutigen Session-Token hat"""
+    if 'user_token' not in session:
+        session['user_token'] = secrets.token_urlsafe(32)
+        session.permanent = True
+
 
 def current_user():
-    name = session.get('user_name', 'default')
+    """Hole den aktuellen Benutzer basierend auf Session-Token"""
+    token = session.get('user_token')
+    if not token:
+        session['user_token'] = secrets.token_urlsafe(32)
+        token = session['user_token']
+    
     try:
-        u = user_by_name(name)
+        u = get_or_create_user_by_token(token)
     except OperationalError:
         ensure_db_ready()
-        u = user_by_name(name)
-    if not u:
-        u = get_or_create_user(name)
+        u = get_or_create_user_by_token(token)
+    
     return u
 
 
@@ -242,7 +252,6 @@ def index():
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
 
-    # Optimiert: Eine Query statt N Queries
     entries_dict = {}
     if habits:
         habit_ids = [h.id for h in habits]
@@ -258,27 +267,29 @@ def index():
     return render_template('today.html', habits=habits, entries=entries_dict, today=today, today_rate=today_rate)
 
 
-@app.route('/month')
-@app.route('/month/<int:year>/<int:month>')
-def month_view(year=None, month=None):
+@app.route('/week')
+@app.route('/week/<int:year>/<int:week>')
+def week_view(year=None, week=None):
+    """Wochenansicht mit Statistiken"""
     today = datetime.now(TIMEZONE).date()
     u = current_user()
     
-    # Standardwerte
-    if year is None or month is None:
-        year = today.year
-        month = today.month
+    # Standardwerte: aktuelle Woche
+    if year is None or week is None:
+        # ISO-Woche verwenden
+        iso_calendar = today.isocalendar()
+        year = iso_calendar[0]
+        week = iso_calendar[1]
     
-    # Ersten und letzten Tag des Monats berechnen
-    start_date = datetime(year, month, 1, tzinfo=TIMEZONE).date()
-    if month == 12:
-        end_date = datetime(year + 1, 1, 1, tzinfo=TIMEZONE).date() - timedelta(days=1)
-    else:
-        end_date = datetime(year, month + 1, 1, tzinfo=TIMEZONE).date() - timedelta(days=1)
+    # Ersten Tag der Woche berechnen (Montag)
+    jan_4 = datetime(year, 1, 4, tzinfo=TIMEZONE)
+    week_start = jan_4 + timedelta(days=-jan_4.weekday(), weeks=week-1)
+    start_date = week_start.date()
+    end_date = start_date + timedelta(days=6)
 
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
     
-    # Alle Entries für den Monat in einer Query holen
+    # Alle Entries für die Woche in einer Query holen
     habit_ids = [h.id for h in habits]
     entries = Entry.query.filter(
         Entry.habit_id.in_(habit_ids),
@@ -293,18 +304,30 @@ def month_view(year=None, month=None):
     
     calendar_data = {}
     stats = []
+    
+    # Wochentage generieren
+    weekdays = []
+    for i in range(7):
+        day = start_date + timedelta(days=i)
+        weekdays.append({
+            'date': day,
+            'name': day.strftime('%A'),
+            'short': day.strftime('%a'),
+            'day': day.day,
+            'is_today': day == today
+        })
 
     for habit in habits:
         habit_entries = entries_by_habit.get(habit.id, [])
         calendar_data[habit.id] = {e.date.isoformat(): e.completed for e in habit_entries}
 
-        total_days = (end_date - start_date).days + 1
         completed = sum(1 for e in habit_entries if e.completed)
-        rate = (completed / total_days * 100) if total_days > 0 else 0
+        rate = (completed / 7 * 100) if completed > 0 else 0
 
         stats.append({
             'habit': habit,
             'rate': round(rate, 1),
+            'completed': completed,
             'current_streak': StatsService.get_current_streak(habit.id, end_date),
             'longest_streak': StatsService.get_longest_streak(habit.id),
             'trend': round(StatsService.get_trend(habit.id, end_date), 1)
@@ -313,11 +336,12 @@ def month_view(year=None, month=None):
     overall_rate = sum(s['rate'] for s in stats) / len(stats) if stats else 0
 
     return render_template(
-        'month.html',
+        'week.html',
         stats={'habits': stats, 'overall_rate': overall_rate, 'start_date': start_date, 'end_date': end_date},
         calendar_data=calendar_data,
+        weekdays=weekdays,
         year=year,
-        month=month,
+        week=week,
         today=today
     )
 
@@ -326,11 +350,20 @@ def month_view(year=None, month=None):
 def settings():
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
-    return render_template('settings.html', habits=habits)
+    
+    # Benutzer-Info für Settings anzeigen
+    user_info = {
+        'id': u.id,
+        'name': u.name,
+        'habits_count': len(habits),
+        'created_at': u.created_at
+    }
+    
+    return render_template('settings.html', habits=habits, user_info=user_info)
 
 
 # =========================
-# API
+# API - Alle mit User-Isolation!
 # =========================
 @app.route('/api/habits', methods=['GET'])
 def api_get_habits():
@@ -364,7 +397,6 @@ def api_create_habit():
 
 @app.route('/api/habits/<int:habit_id>', methods=['PUT'])
 def api_update_habit(habit_id):
-    """NEUE ROUTE: Habit aktualisieren"""
     u = current_user()
     habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
     if not habit:
@@ -402,9 +434,12 @@ def api_toggle():
     habit_id = data.get('habit_id')
     date_str = data.get('date')
     target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    
+    # Sicherheitsprüfung: Habit gehört dem aktuellen User
     habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
     if not habit:
         return jsonify({'error': 'Not found'}), 404
+    
     entry = Entry.query.filter_by(habit_id=habit.id, date=target_date).first()
     if entry:
         entry.completed = not entry.completed
@@ -413,6 +448,13 @@ def api_toggle():
         db.session.add(entry)
     db.session.commit()
     return jsonify({'success': True, 'completed': entry.completed})
+
+
+@app.route('/api/user/reset', methods=['POST'])
+def api_reset_session():
+    """Ermöglicht das Zurücksetzen der Session (neuer Benutzer)"""
+    session.clear()
+    return jsonify({'success': True, 'message': 'Session zurückgesetzt'})
 
 
 if __name__ == '__main__':
