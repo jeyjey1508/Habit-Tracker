@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 import pytz
 from sqlalchemy import text  # für Migration/PRAGMA
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 
 load_dotenv()
 
@@ -22,6 +23,12 @@ TIMEZONE = pytz.timezone('Europe/Berlin')
 # =========================
 # Models
 # =========================
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(TIMEZONE))
+
 class Habit(db.Model):
     __tablename__ = 'habits'
     id = db.Column(db.Integer, primary_key=True)
@@ -29,7 +36,9 @@ class Habit(db.Model):
     category = db.Column(db.String(100))
     position = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(TIMEZONE))
-    emoji = db.Column(db.String(10))  # optionales Emoji
+    emoji = db.Column(db.String(10))
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)  # ⬅️ NEU
+    user = db.relationship('User', backref='habits')
     entries = db.relationship('Entry', backref='habit', lazy=True, cascade='all, delete-orphan')
 
 class Entry(db.Model):
@@ -362,4 +371,5 @@ def init_db():
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
