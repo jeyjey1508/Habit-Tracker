@@ -1,12 +1,11 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf.csrf import CSRFProtect
 from datetime import datetime, date, timedelta
 import os
 from dotenv import load_dotenv
 import pytz
-from sqlalchemy import text  # für Migration/PRAGMA
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from sqlalchemy import text
 
 load_dotenv()
 
@@ -17,8 +16,8 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 csrf = CSRFProtect(app)
-
 TIMEZONE = pytz.timezone('Europe/Berlin')
+
 
 # =========================
 # Models
@@ -29,6 +28,7 @@ class User(db.Model):
     name = db.Column(db.String(120), unique=True, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(TIMEZONE))
 
+
 class Habit(db.Model):
     __tablename__ = 'habits'
     id = db.Column(db.Integer, primary_key=True)
@@ -37,9 +37,10 @@ class Habit(db.Model):
     position = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(TIMEZONE))
     emoji = db.Column(db.String(10))
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)  # ⬅️ NEU
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     user = db.relationship('User', backref='habits')
     entries = db.relationship('Entry', backref='habit', lazy=True, cascade='all, delete-orphan')
+
 
 class Entry(db.Model):
     __tablename__ = 'entries'
@@ -49,8 +50,9 @@ class Entry(db.Model):
     completed = db.Column(db.Boolean, default=False)
     __table_args__ = (db.UniqueConstraint('habit_id', 'date', name='_habit_date_uc'),)
 
+
 # =========================
-# Statistics Service
+# Stats Service
 # =========================
 class StatsService:
     @staticmethod
@@ -81,98 +83,37 @@ class StatsService:
 
     @staticmethod
     def get_longest_streak(habit_id):
-        entries = Entry.query.filter_by(
-            habit_id=habit_id,
-            completed=True
-        ).order_by(Entry.date).all()
-
+        entries = Entry.query.filter_by(habit_id=habit_id, completed=True).order_by(Entry.date).all()
         if not entries:
             return 0
-
         max_streak = current_streak = 1
         for i in range(1, len(entries)):
-            if (entries[i].date - entries[i-1].date).days == 1:
+            if (entries[i].date - entries[i - 1].date).days == 1:
                 current_streak += 1
                 max_streak = max(max_streak, current_streak)
             else:
                 current_streak = 1
         return max_streak
 
-    @staticmethod
-    def get_month_stats(year, month):
-        start_date = date(year, month, 1)
-        if month == 12:
-            end_date = date(year + 1, 1, 1) - timedelta(days=1)
-        else:
-            end_date = date(year, month + 1, 1) - timedelta(days=1)
-
-        habits = Habit.query.order_by(Habit.position).all()
-        stats = []
-
-        for habit in habits:
-            rate = StatsService.get_completion_rate(habit.id, start_date, end_date)
-            current_streak = StatsService.get_current_streak(habit.id, end_date)
-            longest_streak = StatsService.get_longest_streak(habit.id)
-
-            # Vergleich zum Vormonat
-            if month == 1:
-                prev_start = date(year - 1, 12, 1)
-                prev_end = date(year - 1, 12, 31)
-            else:
-                prev_start = date(year, month - 1, 1)
-                prev_end = start_date - timedelta(days=1)
-
-            prev_rate = StatsService.get_completion_rate(habit.id, prev_start, prev_end)
-            trend = rate - prev_rate
-
-            stats.append({
-                'habit': habit,
-                'rate': round(rate, 1),
-                'current_streak': current_streak,
-                'longest_streak': longest_streak,
-                'trend': round(trend, 1)
-            })
-
-        overall_rate = sum(s['rate'] for s in stats) / len(stats) if stats else 0
-        return {
-            'habits': stats,
-            'overall_rate': round(overall_rate, 1),
-            'start_date': start_date,
-            'end_date': end_date
-        }
 
 # =========================
-# Migration Helpers (SQLite)
+# Multiuser + Migration
 # =========================
-
 @app.before_request
 def select_user_from_query():
-    # ?u=Name erlaubt per URL ein Profil zu setzen/wechseln, z.B. /?u=Maria
     u = request.args.get('u')
     if u:
         session['user_name'] = u
+
 
 def current_user():
     name = session.get('user_name', 'default')
     return get_or_create_user(name)
 
 
-def column_exists(table_name, column_name):
-    with app.app_context():
-        rows = db.session.execute(text(f"PRAGMA table_info({table_name})")).mappings().all()
-        return any(r['name'] == column_name for r in rows)
-
-def migrate_db():
-    """Idempotente Migration für bestehende SQLite-DBs."""
-    with app.app_context():
-        # habits.emoji nachrüsten
-        if not column_exists('habits', 'emoji'):
-            db.session.execute(text("ALTER TABLE habits ADD COLUMN emoji VARCHAR(10)"))
-            db.session.commit()
-            print("✓ DB migrated: added 'emoji' column to habits")
-
 def user_by_name(name):
     return User.query.filter_by(name=name).first()
+
 
 def get_or_create_user(name):
     u = user_by_name(name)
@@ -182,22 +123,34 @@ def get_or_create_user(name):
         db.session.commit()
     return u
 
+
+def column_exists(table_name, column_name):
+    with app.app_context():
+        rows = db.session.execute(text(f"PRAGMA table_info({table_name})")).mappings().all()
+        return any(r['name'] == column_name for r in rows)
+
+
+def migrate_db():
+    with app.app_context():
+        if not column_exists('habits', 'emoji'):
+            db.session.execute(text("ALTER TABLE habits ADD COLUMN emoji VARCHAR(10)"))
+            db.session.commit()
+            print("✓ added emoji column")
+
+
 def migrate_db_multitenant():
     with app.app_context():
-        # users-Tabelle anlegen, falls nicht vorhanden
         db.create_all()
         cols = db.session.execute(text("PRAGMA table_info(habits)")).mappings().all()
         colnames = {r['name'] for r in cols}
         if 'user_id' not in colnames:
-            # Spalte hinzufügen
             db.session.execute(text("ALTER TABLE habits ADD COLUMN user_id INTEGER"))
             db.session.commit()
-            # Default-User anlegen
             default_user = get_or_create_user('default')
-            # existierende Habits diesem User zuordnen
-            db.session.execute(text("UPDATE habits SET user_id = :uid WHERE user_id IS NULL"), {'uid': default_user.id})
+            db.session.execute(text("UPDATE habits SET user_id = :uid WHERE user_id IS NULL"),
+                               {'uid': default_user.id})
             db.session.commit()
-            print("✓ DB migrated: added habits.user_id and set to default user")
+            print("✓ added user_id to habits")
 
 
 # =========================
@@ -208,55 +161,41 @@ def index():
     today = datetime.now(TIMEZONE).date()
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
-    # ... Rest bleibt
-
-
-
 
     entries = {}
     for habit in habits:
         entry = Entry.query.filter_by(habit_id=habit.id, date=today).first()
         entries[habit.id] = entry.completed if entry else False
 
-    # Heutige Erfüllungsrate
-    if habits:
-        completed_today = sum(1 for v in entries.values() if v)
-        today_rate = round((completed_today / len(habits)) * 100, 1)
-    else:
-        today_rate = 0
+    completed_today = sum(1 for v in entries.values() if v)
+    today_rate = round((completed_today / len(habits)) * 100, 1) if habits else 0
 
-    return render_template(
-        'today.html',
-        habits=habits,
-        entries=entries,
-        today=today,
-        today_rate=today_rate
-    )
+    return render_template('today.html', habits=habits, entries=entries, today=today, today_rate=today_rate)
 
-@app.route('/week')
-@app.route('/week/<int:year>/<int:week>')
-def week_view(year=None, week=None):
+
+@app.route('/month')
+@app.route('/month/<int:year>/<int:month>/<int:offset>')
+def month_view(year=None, month=None, offset=0):
     today = datetime.now(TIMEZONE).date()
-    if year is None:
-        year = today.isocalendar()[0]  # aktuelles Jahr
-    if week is None:
-        week = today.isocalendar()[1]  # aktuelle KW
+    u = current_user()
+    max_back = 0
 
-    # Wochenanfang (Montag) berechnen
-    first_day = date.fromisocalendar(year, week, 1)
-    last_day = first_day + timedelta(days=6)
+    start_date = today - timedelta(days=6) + timedelta(days=offset * 7)
+    end_date = today + timedelta(days=offset * 7)
 
-    habits = Habit.query.order_by(Habit.position).all()
+    if offset < max_back:
+        return redirect(url_for('month_view', year=today.year, month=today.month, offset=max_back))
+
+    habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
     stats = []
     calendar_data = {}
 
     for habit in habits:
         entries = Entry.query.filter(
             Entry.habit_id == habit.id,
-            Entry.date >= first_day,
-            Entry.date <= last_day
+            Entry.date >= start_date,
+            Entry.date <= end_date
         ).all()
-
         calendar_data[habit.id] = {e.date.isoformat(): e.completed for e in entries}
 
         total_days = 7
@@ -265,21 +204,24 @@ def week_view(year=None, week=None):
 
         stats.append({
             'habit': habit,
-            'rate': round(rate, 1)
+            'rate': round(rate, 1),
+            'current_streak': StatsService.get_current_streak(habit.id, end_date),
+            'longest_streak': StatsService.get_longest_streak(habit.id),
+            'trend': 0
         })
 
     overall_rate = sum(s['rate'] for s in stats) / len(stats) if stats else 0
 
     return render_template(
-        'week.html',
-        stats=stats,
+        'month.html',
+        stats={'habits': stats, 'overall_rate': overall_rate,
+               'start_date': start_date, 'end_date': end_date},
         calendar_data=calendar_data,
-        year=year,
-        week=week,
-        overall_rate=round(overall_rate, 1),
+        year=year or today.year,
+        month=month or today.month,
         today=today,
-        start_date=first_day,
-        end_date=last_day
+        offset=offset,
+        max_back=max_back
     )
 
 
@@ -291,10 +233,11 @@ def settings():
 
 
 # =========================
-# API Routes
+# API
 # =========================
 @app.route('/api/toggle', methods=['POST'])
 def api_toggle():
+    u = current_user()
     data = request.get_json()
     habit_id = data.get('habit_id')
     date_str = data.get('date')
@@ -302,22 +245,22 @@ def api_toggle():
     try:
         target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
     except ValueError:
-        return jsonify({'error': 'Invalid date format'}), 400
+        return jsonify({'error': 'Invalid date'}), 400
 
-    entry = Entry.query.filter_by(habit_id=habit_id, date=target_date).first()
+    habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
+    if not habit:
+        return jsonify({'error': 'Not found'}), 404
 
+    entry = Entry.query.filter_by(habit_id=habit.id, date=target_date).first()
     if entry:
         entry.completed = not entry.completed
     else:
-        entry = Entry(habit_id=habit_id, date=target_date, completed=True)
+        entry = Entry(habit_id=habit.id, date=target_date, completed=True)
         db.session.add(entry)
 
     db.session.commit()
+    return jsonify({'success': True, 'completed': entry.completed})
 
-    return jsonify({
-        'success': True,
-        'completed': entry.completed
-    })
 
 @app.route('/api/habits', methods=['GET'])
 def api_get_habits():
@@ -333,7 +276,7 @@ def api_get_habits():
 def api_create_habit():
     u = current_user()
     data = request.get_json()
-    max_pos = db.session.query(db.func.max(Habit.position)).filter(Habit.user_id==u.id).scalar() or -1
+    max_pos = db.session.query(db.func.max(Habit.position)).filter(Habit.user_id == u.id).scalar() or -1
     habit = Habit(
         name=data['name'],
         category=data.get('category'),
@@ -348,9 +291,12 @@ def api_create_habit():
 
 @app.route('/api/habits/<int:habit_id>', methods=['PUT'])
 def api_update_habit(habit_id):
-    habit = Habit.query.get_or_404(habit_id)
-    data = request.get_json()
+    u = current_user()
+    habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
+    if not habit:
+        return jsonify({'error': 'Not found'}), 404
 
+    data = request.get_json()
     if 'name' in data:
         habit.name = data['name']
     if 'category' in data:
@@ -363,52 +309,36 @@ def api_update_habit(habit_id):
     db.session.commit()
     return jsonify({'success': True})
 
+
 @app.route('/api/habits/<int:habit_id>', methods=['DELETE'])
 def api_delete_habit(habit_id):
-    habit = Habit.query.get_or_404(habit_id)
+    u = current_user()
+    habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
+    if not habit:
+        return jsonify({'error': 'Not found'}), 404
     db.session.delete(habit)
     db.session.commit()
     return jsonify({'success': True})
 
-@app.route('/api/stats/<int:year>/<int:month>')
-def api_month_stats(year, month):
-    stats = StatsService.get_month_stats(year, month)
-    return jsonify({
-        'overall_rate': stats['overall_rate'],
-        'habits': [{
-            'id': s['habit'].id,
-            'name': s['habit'].name,
-            'rate': s['rate'],
-            'current_streak': s['current_streak'],
-            'longest_streak': s['longest_streak'],
-            'trend': s['trend']
-        } for s in stats['habits']]
-    })
 
 # =========================
-# DB Init + Defaults + Migration
+# Init + Run
 # =========================
 def init_db():
     with app.app_context():
         db.create_all()
-        migrate_db()              # falls du schon hattest (emoji etc.)
-        migrate_db_multitenant()  # ⬅️ NEU
+        migrate_db()
+        migrate_db_multitenant()
 
-        # Default-Habits nur anlegen, wenn gar keine Habits existieren
         if Habit.query.count() == 0:
             default_user = get_or_create_user('default')
-            defaults = ['Meditation','Sport/Bewegung','Gesund essen','Wasser trinken','Lesen','Früh aufstehen']
+            defaults = ['Meditation', 'Sport/Bewegung', 'Gesund essen',
+                        'Wasser trinken', 'Lesen', 'Früh aufstehen']
             for i, name in enumerate(defaults):
                 db.session.add(Habit(name=name, position=i, user_id=default_user.id))
             db.session.commit()
 
 
-# =========================
-# Main
-# =========================
 if __name__ == '__main__':
     init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
-
-
-
