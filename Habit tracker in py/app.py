@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 import pytz
-from sqlalchemy import text
+from sqlalchemy import text, Index
 from sqlalchemy.exc import OperationalError
+from collections import defaultdict
 
 load_dotenv()
 
@@ -41,6 +42,11 @@ class Habit(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     user = db.relationship('User', backref='habits')
     entries = db.relationship('Entry', backref='habit', lazy=True, cascade='all, delete-orphan')
+    
+    # Performance-Indizes
+    __table_args__ = (
+        Index('idx_user_position', 'user_id', 'position'),
+    )
 
 
 class Entry(db.Model):
@@ -49,7 +55,94 @@ class Entry(db.Model):
     habit_id = db.Column(db.Integer, db.ForeignKey('habits.id'), nullable=False)
     date = db.Column(db.Date, nullable=False)
     completed = db.Column(db.Boolean, default=False)
-    __table_args__ = (db.UniqueConstraint('habit_id', 'date', name='_habit_date_uc'),)
+    __table_args__ = (
+        db.UniqueConstraint('habit_id', 'date', name='_habit_date_uc'),
+        Index('idx_habit_date', 'habit_id', 'date'),
+    )
+
+
+# =========================
+# Statistics Service (NEU!)
+# =========================
+class StatsService:
+    @staticmethod
+    def get_completion_rate(habit_id, start_date, end_date):
+        """Berechnet Completion Rate für Zeitraum"""
+        entries = Entry.query.filter(
+            Entry.habit_id == habit_id,
+            Entry.date >= start_date,
+            Entry.date <= end_date
+        ).all()
+        
+        total_days = (end_date - start_date).days + 1
+        completed = sum(1 for e in entries if e.completed)
+        return (completed / total_days * 100) if total_days > 0 else 0
+    
+    @staticmethod
+    def get_current_streak(habit_id, reference_date=None):
+        """Berechnet aktuelle Streak (aufeinanderfolgende Tage)"""
+        if reference_date is None:
+            reference_date = datetime.now(TIMEZONE).date()
+        
+        entries = Entry.query.filter(
+            Entry.habit_id == habit_id,
+            Entry.date <= reference_date,
+            Entry.completed == True
+        ).order_by(Entry.date.desc()).all()
+        
+        if not entries:
+            return 0
+        
+        streak = 0
+        expected_date = reference_date
+        
+        for entry in entries:
+            if entry.date == expected_date:
+                streak += 1
+                expected_date -= timedelta(days=1)
+            elif entry.date < expected_date:
+                break
+        
+        return streak
+    
+    @staticmethod
+    def get_longest_streak(habit_id):
+        """Findet längste jemals erreichte Streak"""
+        entries = Entry.query.filter(
+            Entry.habit_id == habit_id,
+            Entry.completed == True
+        ).order_by(Entry.date).all()
+        
+        if not entries:
+            return 0
+        
+        max_streak = current_streak = 1
+        last_date = entries[0].date
+        
+        for entry in entries[1:]:
+            if (entry.date - last_date).days == 1:
+                current_streak += 1
+                max_streak = max(max_streak, current_streak)
+            else:
+                current_streak = 1
+            last_date = entry.date
+        
+        return max_streak
+    
+    @staticmethod
+    def get_trend(habit_id, reference_date=None):
+        """Berechnet Trend: Vergleich letzte 7 Tage vs. 7 Tage davor"""
+        if reference_date is None:
+            reference_date = datetime.now(TIMEZONE).date()
+        
+        recent_start = reference_date - timedelta(days=6)
+        previous_start = reference_date - timedelta(days=13)
+        previous_end = reference_date - timedelta(days=7)
+        
+        recent_rate = StatsService.get_completion_rate(habit_id, recent_start, reference_date)
+        previous_rate = StatsService.get_completion_rate(habit_id, previous_start, previous_end)
+        
+        return recent_rate - previous_rate
 
 
 # =========================
@@ -96,7 +189,6 @@ def migrate_db_multitenant():
             print("✓ added user_id to habits")
 
 
-# ---- DB Bootstrap (robust für Render/Gunicorn) ----
 _db_ready = False
 
 def ensure_db_ready():
@@ -150,52 +242,72 @@ def index():
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
 
-    entries = {}
-    for habit in habits:
-        entry = Entry.query.filter_by(habit_id=habit.id, date=today).first()
-        entries[habit.id] = entry.completed if entry else False
+    # Optimiert: Eine Query statt N Queries
+    entries_dict = {}
+    if habits:
+        habit_ids = [h.id for h in habits]
+        entries = Entry.query.filter(
+            Entry.habit_id.in_(habit_ids),
+            Entry.date == today
+        ).all()
+        entries_dict = {e.habit_id: e.completed for e in entries}
 
-    completed_today = sum(1 for v in entries.values() if v)
+    completed_today = sum(1 for v in entries_dict.values() if v)
     today_rate = round((completed_today / len(habits)) * 100, 1) if habits else 0
 
-    return render_template('today.html', habits=habits, entries=entries, today=today, today_rate=today_rate)
+    return render_template('today.html', habits=habits, entries=entries_dict, today=today, today_rate=today_rate)
 
 
 @app.route('/month')
-@app.route('/month/<int:year>/<int:month>/<int:offset>')
-def month_view(year=None, month=None, offset=0):
+@app.route('/month/<int:year>/<int:month>')
+def month_view(year=None, month=None):
     today = datetime.now(TIMEZONE).date()
     u = current_user()
-    max_back = 0
-
-    start_date = today - timedelta(days=6) + timedelta(days=offset * 7)
-    end_date = today + timedelta(days=offset * 7)
-
-    if offset < max_back:
-        return redirect(url_for('month_view', year=today.year, month=today.month, offset=max_back))
+    
+    # Standardwerte
+    if year is None or month is None:
+        year = today.year
+        month = today.month
+    
+    # Ersten und letzten Tag des Monats berechnen
+    start_date = datetime(year, month, 1, tzinfo=TIMEZONE).date()
+    if month == 12:
+        end_date = datetime(year + 1, 1, 1, tzinfo=TIMEZONE).date() - timedelta(days=1)
+    else:
+        end_date = datetime(year, month + 1, 1, tzinfo=TIMEZONE).date() - timedelta(days=1)
 
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
-    stats = []
+    
+    # Alle Entries für den Monat in einer Query holen
+    habit_ids = [h.id for h in habits]
+    entries = Entry.query.filter(
+        Entry.habit_id.in_(habit_ids),
+        Entry.date >= start_date,
+        Entry.date <= end_date
+    ).all() if habit_ids else []
+    
+    # Entries gruppieren
+    entries_by_habit = defaultdict(list)
+    for entry in entries:
+        entries_by_habit[entry.habit_id].append(entry)
+    
     calendar_data = {}
+    stats = []
 
     for habit in habits:
-        entries = Entry.query.filter(
-            Entry.habit_id == habit.id,
-            Entry.date >= start_date,
-            Entry.date <= end_date
-        ).all()
-        calendar_data[habit.id] = {e.date.isoformat(): e.completed for e in entries}
+        habit_entries = entries_by_habit.get(habit.id, [])
+        calendar_data[habit.id] = {e.date.isoformat(): e.completed for e in habit_entries}
 
-        total_days = 7
-        completed = sum(1 for e in entries if e.completed)
+        total_days = (end_date - start_date).days + 1
+        completed = sum(1 for e in habit_entries if e.completed)
         rate = (completed / total_days * 100) if total_days > 0 else 0
 
         stats.append({
             'habit': habit,
             'rate': round(rate, 1),
-            'current_streak': 0,
-            'longest_streak': 0,
-            'trend': 0
+            'current_streak': StatsService.get_current_streak(habit.id, end_date),
+            'longest_streak': StatsService.get_longest_streak(habit.id),
+            'trend': round(StatsService.get_trend(habit.id, end_date), 1)
         })
 
     overall_rate = sum(s['rate'] for s in stats) / len(stats) if stats else 0
@@ -204,11 +316,9 @@ def month_view(year=None, month=None, offset=0):
         'month.html',
         stats={'habits': stats, 'overall_rate': overall_rate, 'start_date': start_date, 'end_date': end_date},
         calendar_data=calendar_data,
-        year=year or today.year,
-        month=month or today.month,
-        today=today,
-        offset=offset,
-        max_back=max_back
+        year=year,
+        month=month,
+        today=today
     )
 
 
@@ -226,7 +336,13 @@ def settings():
 def api_get_habits():
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
-    return jsonify([{ 'id': h.id, 'name': h.name, 'category': h.category, 'position': h.position, 'emoji': h.emoji } for h in habits])
+    return jsonify([{ 
+        'id': h.id, 
+        'name': h.name, 
+        'category': h.category, 
+        'position': h.position, 
+        'emoji': h.emoji 
+    } for h in habits])
 
 
 @app.route('/api/habits', methods=['POST'])
@@ -234,10 +350,38 @@ def api_create_habit():
     u = current_user()
     data = request.get_json()
     max_pos = db.session.query(db.func.max(Habit.position)).filter(Habit.user_id == u.id).scalar() or -1
-    habit = Habit(name=data['name'], category=data.get('category'), emoji=data.get('emoji'), position=max_pos + 1, user_id=u.id)
+    habit = Habit(
+        name=data['name'], 
+        category=data.get('category'), 
+        emoji=data.get('emoji'), 
+        position=max_pos + 1, 
+        user_id=u.id
+    )
     db.session.add(habit)
     db.session.commit()
     return jsonify({'success': True, 'id': habit.id})
+
+
+@app.route('/api/habits/<int:habit_id>', methods=['PUT'])
+def api_update_habit(habit_id):
+    """NEUE ROUTE: Habit aktualisieren"""
+    u = current_user()
+    habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
+    if not habit:
+        return jsonify({'error': 'Not found'}), 404
+    
+    data = request.get_json()
+    if 'name' in data:
+        habit.name = data['name']
+    if 'category' in data:
+        habit.category = data['category']
+    if 'emoji' in data:
+        habit.emoji = data['emoji']
+    if 'position' in data:
+        habit.position = data['position']
+    
+    db.session.commit()
+    return jsonify({'success': True})
 
 
 @app.route('/api/habits/<int:habit_id>', methods=['DELETE'])
