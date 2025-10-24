@@ -49,7 +49,8 @@
                 {# wd.date kann ein date-Objekt sein — benutze isoformat() für data-attribute #}
                 {% set date_iso = wd.date.isoformat() %}
                 {% set done = calendar_data.get(s['habit'].id, {}).get(date_iso, False) %}
-                <td class="week-cell {{ 'completed' if done }}" data-date="{{ date_iso }}">
+                {# WICHTIG: pro-Zelle eine .habit-item erzeugen, damit toggleHabit (button.closest('.habit-item')) funktioniert #}
+                <td class="week-cell habit-item {{ 'completed' if done }}" data-date="{{ date_iso }}" data-habit-id="{{ s['habit'].id }}">
                   <button
                     class="habit-checkbox"
                     onclick="toggleHabit({{ s['habit'].id }}, '{{ date_iso }}', this)"
