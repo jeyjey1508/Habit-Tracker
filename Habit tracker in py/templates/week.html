@@ -49,17 +49,16 @@
                 {# wd.date kann ein date-Objekt sein — benutze isoformat() für data-attribute #}
                 {% set date_iso = wd.date.isoformat() %}
                 {% set done = calendar_data.get(s['habit'].id, {}).get(date_iso, False) %}
-                {# WICHTIG: pro-Zelle eine .habit-item erzeugen, damit toggleHabit (button.closest('.habit-item')) funktioniert #}
-                <td class="week-cell habit-item {{ 'completed' if done }}" data-date="{{ date_iso }}" data-habit-id="{{ s['habit'].id }}">
-                  <button
-                    class="habit-checkbox"
-                    onclick="toggleHabit({{ s['habit'].id }}, '{{ date_iso }}', this)"
-                    onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault(); this.click();}"
+                {# Nicht-interaktive Zelle: keine onclick/keydown mehr #}
+                <td class="week-cell habit-item {{ 'completed' if done }}" data-date="{{ date_iso }}" data-habit-id="{{ s['habit'].id }}" title="{{ 'Erledigt' if done else 'Nicht erledigt' }}">
+                  <div
+                    class="habit-checkbox disabled"
+                    role="img"
                     aria-label="{{ s['habit'].name }} {{ 'erledigt' if done else 'nicht erledigt' }}"
-                    aria-pressed="{{ 'true' if done else 'false' }}"
-                    title="{{ 'Erledigt' if done else 'Nicht erledigt' }}">
+                    aria-hidden="false"
+                    >
                     <span class="checkbox-visual" aria-hidden="true">✓</span>
-                  </button>
+                  </div>
                 </td>
               {% endfor %}
             </tr>
@@ -95,7 +94,6 @@
 
 {% block scripts %}
 <script>
-  // WEEKDAYS erzeugen wir per Template, damit Datumsobjekte sicher als ISO-Strings kommen
   const YEAR = {{ year|tojson }};
   const WEEK = {{ week|tojson }};
   const CALENDAR_DATA = {{ calendar_data|tojson }};
@@ -113,17 +111,13 @@
     {% endfor %}
   ];
 
-  // Label aktualisieren
   (function initLabel(){
     const lbl = document.getElementById('weekLabel');
     if (lbl) lbl.textContent = `KW ${String(WEEK).padStart(2,'0')} ${YEAR}`;
   })();
 
-  // Navigation (Vor/Zurück in Wochen)
   function getISOWeekAndYearFromDate(d) {
-    // expects a Date object in UTC
     const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-    // shift to Thursday to determine ISO week-numbering year
     date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
     const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
     const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
@@ -143,7 +137,6 @@
     if (nextLink) nextLink.href = `/week/${n.year}/${n.week}`;
   })();
 
-  // Mini-Heatmaps pro Habit
   function makeHeat(container, dataMap) {
     const grid = document.createElement('div');
     grid.className = 'heat-grid';
@@ -164,7 +157,6 @@
       makeHeat(div, CALENDAR_DATA[id] || {});
     });
 
-    // Overall Rate safety
     const overallEl = document.getElementById('overallRate');
     if (overallEl) overallEl.textContent = Number(OVERALL).toFixed(1) + '%';
   });
