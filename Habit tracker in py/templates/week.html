@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Woche - Habit Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header row-between">
+    <div>
+      <h1 class="h1">Wochenübersicht</h1>
+      <p class="muted">Zeitraum: {{ stats['start_date'].strftime('%d.%m.%Y') }} – {{ stats['end_date'].strftime('%d.%m.%Y') }}</p>
+    </div>
+    <div class="month-nav">
+      <a id="prevLink" class="btn-secondary" href="#">←</a>
+      <span class="month-label" id="weekLabel">KW {{ week }} {{ year }}</span>
+      <a id="nextLink" class="btn-secondary" href="#">→</a>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card-sub">
+      <h3 class="h3">Tabelle</h3>
+
+      <table class="week-table">
+        <thead>
+          <tr>
+            <th>Gewohnheit</th>
+            {% for wd in weekdays %}
+              <th class="weekday {{ 'today' if wd.is_today }}">{{ wd.short }}<br>{{ wd.day }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in stats['habits'] %}
+          <tr class="habit-row" data-habit-id="{{ s['habit'].id }}">
+            <td>
+              <strong>{{ s['habit'].name }}</strong>
+              {% if s['habit'].category %}<div class="muted">{{ s['habit'].category }}</div>{% endif %}
+            </td>
+
+            {% for wd in weekdays %}
+            {% set date_iso = wd.date.isoformat() %}
+            {% set done = calendar_data.get(s['habit'].id, {}).get(date_iso, False) %}
+            <td class="week-cell {{ 'completed' if done }}">
+              <button class="habit-checkbox"
+                      onclick="toggleHabit({{ s['habit'].id }}, '{{ date_iso }}', this)"
+                      aria-label="{{ s['habit'].name }} {{ 'erledigt' if done else 'nicht erledigt' }}"
+                      aria-pressed="{{ 'true' if done else 'false' }}">
+                <span class="checkbox-visual" aria-hidden="true">✓</span>
+              </button>
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+    </div>
+
+    <div class="card-sub">
+      <h3 class="h3">Statistiken</h3>
+      <p class="muted">Gesamterfüllung: <strong id="overallRate">{{ stats['overall_rate']|round(1) }}%</strong></p>
+
+      <ul class="stats-list">
+        {% for s in stats['habits'] %}
+        <li class="stat-item">
+          <div class="stat-main">
+            <strong>{{ s['habit'].name }}</strong>
+            {% if s['habit'].category %}<span class="badge">{{ s['habit'].category }}</span>{% endif %}
+          </div>
+          <div class="stat-sub">
+            Rate: {{ s['rate']|round(1) }}% · Streak: {{ s['current_streak'] }} · Max: {{ s['longest_streak'] }} · Trend:
+            <span class="{{ 'pos' if s['trend']>=0 else 'neg' }}">{{ '%+.1f'|format(s['trend']) }}%</span>
+          </div>
+          <div class="mini-heat" data-habit-id="{{ s['habit'].id }}"></div>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Serverwerte als JS
+  const YEAR = {{ year|tojson }};
+  const WEEK = {{ week|tojson }};
+  const WEEKDAYS = {{ weekdays|tojson }};
+  const CALENDAR_DATA = {{ calendar_data|tojson }};
+  const OVERALL = {{ stats['overall_rate']|tojson }};
+
+  // Label
+  (function initLabel(){
+    const lbl = document.getElementById('weekLabel');
+    lbl.textContent = `KW ${String(WEEK).padStart(2,'0')} ${YEAR}`;
+  })();
+
+  // ISO-Wochen-Berechnung für Navigation
+  function getISOWeekAndYearFromDate(d) {
+    // d is a Date object (UTC)
+    const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    // ISO: week starts on Monday; use Thursday to determine year
+    date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+    return { year: date.getUTCFullYear(), week: weekNo };
+  }
+
+  (function initNav(){
+    // WEEKDAYS[0].date is ISO string 'YYYY-MM-DD'
+    const start = new Date(WEEKDAYS[0].date + 'T00:00:00Z');
+    const prev = new Date(start); prev.setUTCDate(prev.getUTCDate() - 7);
+    const next = new Date(start); next.setUTCDate(next.getUTCDate() + 7);
+    const p = getISOWeekAndYearFromDate(prev);
+    const n = getISOWeekAndYearFromDate(next);
+    document.getElementById('prevLink').href = `/week/${p.year}/${p.week}`;
+    document.getElementById('nextLink').href = `/week/${n.year}/${n.week}`;
+  })();
+
+  // Mini-Heatmaps: benutze die 7 Tage aus WEEKDAYS
+  function makeHeat(container, dataMap) {
+    const grid = document.createElement('div');
+    grid.className = 'heat-grid';
+    for (let i = 0; i < WEEKDAYS.length; i++) {
+      const ds = WEEKDAYS[i].date;
+      const hit = Boolean(dataMap[ds]);
+      const cell = document.createElement('div');
+      cell.className = 'heat-cell ' + (hit ? 'hit' : '');
+      cell.title = `${ds} - ${hit ? '✓' : '—'}`;
+      grid.appendChild(cell);
+    }
+    container.replaceChildren(grid);
+  }
+  document.querySelectorAll('.mini-heat').forEach(div => {
+    const id = div.getAttribute('data-habit-id');
+    makeHeat(div, CALENDAR_DATA[id] || {});
+  });
+
+  // Safety: overall rate
+  const overallEl = document.getElementById('overallRate');
+  if (overallEl) overallEl.textContent = Number(OVERALL).toFixed(1) + '%';
+</script>
+{% endblock %}
