@@ -11,73 +11,111 @@ const api = {
             'X-CSRFToken': getCsrfToken(),
             ...options.headers
         };
-        
+
         try {
             const response = await fetch(url, { ...options, headers });
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                // Try to extract JSON error message if present
+                let errMsg = `HTTP error! status: ${response.status}`;
+                try {
+                    const json = await response.json();
+                    if (json && json.error) errMsg += ` - ${json.error}`;
+                } catch (_) {}
+                throw new Error(errMsg);
             }
-            return await response.json();
+            // Some endpoints may return no content
+            const text = await response.text();
+            try {
+                return text ? JSON.parse(text) : {};
+            } catch (_) {
+                return text;
+            }
         } catch (error) {
             console.error('API Error:', error);
             throw error;
         }
     },
-    
+
     get(url) {
         return this.request(url);
     },
-    
+
     post(url, data) {
         return this.request(url, {
             method: 'POST',
             body: JSON.stringify(data)
         });
     },
-    
+
     put(url, data) {
         return this.request(url, {
             method: 'PUT',
             body: JSON.stringify(data)
         });
     },
-    
+
     delete(url) {
         return this.request(url, { method: 'DELETE' });
     }
 };
 
-// Habit Toggle Function
+// Robustere toggleHabit: ignoriert nicht-interaktive Elemente und verhindert Errors
 async function toggleHabit(habitId, date, button) {
+    // Defensive checks
+    if (!button) {
+        console.warn('toggleHabit: kein Button-Element übergeben');
+        return;
+    }
+    // If button is marked disabled (used in week view), do nothing
+    if (button.classList.contains('disabled')) {
+        return;
+    }
+
     const habitItem = button.closest('.habit-item');
+    if (!habitItem) {
+        console.warn('toggleHabit: .habit-item nicht gefunden für Button', button);
+        return;
+    }
+
     const wasCompleted = habitItem.classList.contains('completed');
-    
+
     // Optimistic UI update
     habitItem.classList.toggle('completed');
-    
+
     try {
         const data = await api.post('/api/toggle', {
             habit_id: habitId,
             date: date
         });
-        
-        // Confirm UI state matches server
-        habitItem.classList.toggle('completed', data.completed);
-        
-        // Update ARIA label
-        const habitName = habitItem.querySelector('.habit-name').textContent;
-        button.setAttribute('aria-label', 
-            `${habitName} ${data.completed ? 'erledigt' : 'nicht erledigt'}`
-        );
-        
-        // Update progress if on today page
-        if (typeof updateProgress === 'function') {
-            updateProgress();
+
+        // If backend returned an error structure, throw it
+        if (!data || typeof data.completed === 'undefined') {
+            throw new Error('Ungültige Serverantwort beim Toggle');
         }
+
+        // Confirm UI state with server response
+        habitItem.classList.toggle('completed', !!data.completed);
+
+        // Update ARIA attributes
+        const habitNameEl = habitItem.querySelector('.habit-name') || habitItem.querySelector('strong');
+        const habitName = habitNameEl ? habitNameEl.textContent.trim() : '';
+        try {
+            button.setAttribute('aria-label', `${habitName} ${data.completed ? 'erledigt' : 'nicht erledigt'}`);
+            button.setAttribute('aria-pressed', data.completed ? 'true' : 'false');
+        } catch (e) {
+            // ignore DOM setAttribute errors
+        }
+
+        // If an updateProgress function exists (today view), call it
+        if (typeof updateProgress === 'function') {
+            try { updateProgress(); } catch (_) {}
+        }
+
     } catch (error) {
-        // Revert on error
-        habitItem.classList.toggle('completed', wasCompleted);
+        // Revert optimistic UI change on error
+        if (habitItem) habitItem.classList.toggle('completed', wasCompleted);
         showNotification('Fehler beim Speichern', 'error');
+        console.error('toggleHabit error:', error);
     }
 }
 
@@ -86,6 +124,8 @@ function showNotification(message, type = 'info') {
     const notification = document.createElement('div');
     notification.className = `notification notification-${type}`;
     notification.textContent = message;
+
+    // Inline styles to keep this component self-contained
     notification.style.cssText = `
         position: fixed;
         top: 80px;
@@ -95,64 +135,48 @@ function showNotification(message, type = 'info') {
         color: white;
         border-radius: 8px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        z-index: 1000;
-        animation: slideIn 0.3s ease;
+        z-index: 10000;
+        animation: slideIn 0.28s ease;
     `;
-    
+
     document.body.appendChild(notification);
-    
+
     setTimeout(() => {
-        notification.style.animation = 'slideOut 0.3s ease';
-        setTimeout(() => notification.remove(), 300);
-    }, 3000);
+        notification.style.animation = 'slideOut 0.28s ease';
+        setTimeout(() => notification.remove(), 320);
+    }, 2800);
 }
 
-// Add animations
-const style = document.createElement('style');
-style.textContent = `
+// Add small animation styles for notifications
+(function addNotificationStyles(){
+    if (document.getElementById('ht-notif-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'ht-notif-styles';
+    style.textContent = `
     @keyframes slideIn {
-        from { transform: translateX(400px); opacity: 0; }
+        from { transform: translateX(200px); opacity: 0; }
         to { transform: translateX(0); opacity: 1; }
     }
     @keyframes slideOut {
         from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(400px); opacity: 0; }
+        to { transform: translateX(200px); opacity: 0; }
     }
-`;
-document.head.appendChild(style);
+    .notification { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; font-size: 14px; }
+    `;
+    document.head.appendChild(style);
+})();
 
-// Keyboard Navigation
-document.addEventListener('keydown', (e) => {
-    // Space to toggle focused habit
-    if (e.code === 'Space' && e.target.classList.contains('habit-checkbox')) {
-        e.preventDefault();
-        e.target.click();
-    }
-    
-    // Arrow keys to navigate habits
-    if (['ArrowUp', 'ArrowDown'].includes(e.code)) {
-        const habits = Array.from(document.querySelectorAll('.habit-checkbox'));
-        const currentIndex = habits.indexOf(document.activeElement);
-        
-        if (currentIndex !== -1) {
-            e.preventDefault();
-            const nextIndex = e.code === 'ArrowDown' 
-                ? Math.min(currentIndex + 1, habits.length - 1)
-                : Math.max(currentIndex - 1, 0);
-            habits[nextIndex].focus();
-        }
-    }
-});
-
-// Service Worker for offline support (optional enhancement)
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        // Uncomment to enable offline support
-        // navigator.serviceWorker.register('/static/sw.js');
-    });
+// Utility: simple debounce (if needed elsewhere)
+function debounce(fn, wait = 200) {
+    let t;
+    return function(...args) {
+        clearTimeout(t);
+        t = setTimeout(() => fn.apply(this, args), wait);
+    };
 }
 
-// Export for use in templates
-window.api = api;
-window.toggleHabit = toggleHabit;
-window.showNotification = showNotification;
+// Export to window for debugging (no module system assumed)
+window.HabitTracker = window.HabitTracker || {};
+window.HabitTracker.api = api;
+window.HabitTracker.toggleHabit = toggleHabit;
+window.HabitTracker.showNotification = showNotification;
