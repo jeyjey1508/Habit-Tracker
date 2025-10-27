@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Registrieren - Habit Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header">
+    <h1 class="h1">Registrieren</h1>
+    <p class="muted">Erstelle einen neuen Account (nur für Demo/Schule).</p>
+  </div>
+
+  {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" class="form">
+    <div class="form-row">
+      <label for="username">Nutzername</label>
+      <input id="username" name="username" type="text" required autofocus>
+    </div>
+    <div class="form-row">
+      <label for="password">Passwort</label>
+      <input id="password" name="password" type="password" required>
+    </div>
+    <div class="form-row">
+      <label for="password2">Passwort wiederholen</label>
+      <input id="password2" name="password2" type="password" required>
+    </div>
+    <div class="form-row">
+      <button class="btn-primary" type="submit">Registrieren</button>
+      <a class="btn-secondary" href="{{ url_for('index') }}">Abbrechen</a>
+    </div>
+  </form>
+</section>
+
+<script>
+  // einfache clientseitige Prüfung, dass beide Passwörter übereinstimmen
+  document.querySelector('form').addEventListener('submit', function(e){
+    const p = document.getElementById('password').value;
+    const p2 = document.getElementById('password2').value;
+    if (p !== p2) {
+      e.preventDefault();
+      alert('Passwörter stimmen nicht überein.');
+    }
+  });
+</script>
+{% endblock %}
