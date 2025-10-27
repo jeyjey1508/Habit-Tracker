@@ -16,11 +16,9 @@ load_dotenv()
 app = Flask(__name__)
 
 # === Persistenz- & Secret-Setup ===
-# Basisverzeichnis (dieses File liegt in py/)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))   # .../Habit-Tracker/Habit tracker in py/py
-# Datenverzeichnis im Projekt-Root: ../data
-DATA_DIR = os.path.join(BASE_DIR, '..', 'data')
-os.makedirs(DATA_DIR, exist_ok=True)  # erstellt data/ beim App-Start (nur relevant auf dem Host)
+DATA_DIR = os.path.normpath(os.path.join(BASE_DIR, '..', 'data'))
+os.makedirs(DATA_DIR, exist_ok=True)  # erstellt data/ beim App-Start auf dem Host
 
 # Standard-Pfad zur SQLite-Datei (überschreibbar durch ENV DATABASE_URL)
 default_db_path = f"sqlite:///{os.path.join(DATA_DIR, 'habits.db')}"
@@ -477,4 +475,5 @@ def api_reset_session():
 if __name__ == '__main__':
     ensure_db_ready()
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
