@@ -331,10 +331,14 @@ def login():
     return render_template('login.html', next=next_url)
 
 
-@app.route('/logout')
+@app.route('/logout', methods=['GET', 'POST'])
 def logout():
+    """Loggt den aktuellen Benutzer aus und löscht die Session-User-Information."""
+    # Entferne den user-Eintrag aus der Session
     session.pop('user', None)
-    return redirect(url_for('login'))
+    # Optional: session.clear() wenn du wirklich alle Session-Daten löschen willst
+    # session.clear()
+    return redirect(url_for('index'))
 
 
 # =========================
