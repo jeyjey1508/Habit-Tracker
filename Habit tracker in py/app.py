@@ -12,22 +12,39 @@ import secrets
 
 load_dotenv()
 
+# ----- App initialisieren -----
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///habits.db'
+
+# === Persistenz- & Secret-Setup ===
+# Basisverzeichnis (dieses File liegt in py/)
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))   # .../Habit-Tracker/Habit tracker in py/py
+# Datenverzeichnis im Projekt-Root: ../data
+DATA_DIR = os.path.join(BASE_DIR, '..', 'data')
+os.makedirs(DATA_DIR, exist_ok=True)  # erstellt data/ beim App-Start (nur relevant auf dem Host)
+
+# Standard-Pfad zur SQLite-Datei (überschreibbar durch ENV DATABASE_URL)
+default_db_path = f"sqlite:///{os.path.join(DATA_DIR, 'habits.db')}"
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', default_db_path)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# SECRET_KEY: aus Environment, sonst ein dev-fallback (NICHT für Prod)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.environ.get('FLASK_SECRET_KEY', 'dev-secret-please-change'))
+
+# Session-Einstellungen
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+# ================================
 
+# Extensions initialisieren
 db = SQLAlchemy(app)
 csrf = CSRFProtect(app)
 TIMEZONE = pytz.timezone('Europe/Berlin')
 
-
 # =========================
 # Models
 # =========================
+
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -460,3 +477,4 @@ def api_reset_session():
 if __name__ == '__main__':
     ensure_db_ready()
     app.run(debug=True, host='0.0.0.0', port=5000)
+
