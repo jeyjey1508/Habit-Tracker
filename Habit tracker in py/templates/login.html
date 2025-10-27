@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Login - Habit Tracker{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="card-header">
+    <h1 class="h1">Login</h1>
+    <p class="muted">Melde dich mit deinem Benutzernamen und Passwort an.</p>
+  </div>
+
+  {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" class="form">
+    <div class="form-row">
+      <label for="username">Nutzername</label>
+      <input id="username" name="username" type="text" required autofocus>
+    </div>
+    <div class="form-row">
+      <label for="password">Passwort</label>
+      <input id="password" name="password" type="password" required>
+    </div>
+    <input type="hidden" name="next" value="{{ next }}">
+    <div class="form-row">
+      <button class="btn-primary" type="submit">Anmelden</button>
+      <a class="btn-secondary" href="{{ url_for('index') }}">Abbrechen</a>
+    </div>
+  </form>
+
+  <p class="muted">Noch keinen Account? <a href="{{ url_for('register') }}">Registrieren</a></p>
+</section>
+{% endblock %}
