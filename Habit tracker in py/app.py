@@ -9,6 +9,9 @@ from sqlalchemy import text, Index
 from sqlalchemy.exc import OperationalError
 from collections import defaultdict
 import secrets
+import json
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
 
 load_dotenv()
 
@@ -38,6 +41,38 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 db = SQLAlchemy(app)
 csrf = CSRFProtect(app)
 TIMEZONE = pytz.timezone('Europe/Berlin')
+
+# =========================
+# File-based User Auth
+# =========================
+USERS_FILE = os.path.join(DATA_DIR, 'users.json')
+
+def load_users():
+    try:
+        if not os.path.exists(USERS_FILE):
+            return {}
+        with open(USERS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        app.logger.warning(f"load_users failed: {e}")
+        return {}
+
+def save_users(users):
+    try:
+        os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+        with open(USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        app.logger.error(f"save_users failed: {e}")
+
+# Simple login_required decorator
+def login_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if not session.get('user'):
+            return redirect(url_for('login', next=request.path))
+        return f(*args, **kwargs)
+    return wrapped
 
 # =========================
 # Models
@@ -169,16 +204,15 @@ def column_exists(table_name, column_name):
         return any(r['name'] == column_name for r in rows)
 
 
-def user_by_token(token):
-    return User.query.filter_by(session_token=token).first()
+def user_by_name(username):
+    return User.query.filter_by(name=username).first()
 
 
-def get_or_create_user_by_token(token):
-    u = user_by_token(token)
+def get_or_create_user_by_name(username):
+    u = user_by_name(username)
     if not u:
-        # Erstelle anonymen Benutzer mit eindeutigem Namen
-        username = f"user_{token[:8]}"
-        u = User(name=username, session_token=token)
+        # Erstelle Benutzer falls nicht vorhanden
+        u = User(name=username)
         db.session.add(u)
         db.session.commit()
     return u
@@ -232,36 +266,82 @@ def _bootstrap_before_each_request():
 
 
 # =========================
-# User Context - FIXED!
+# User Context
 # =========================
-@app.before_request
-def ensure_user_session():
-    """Stelle sicher, dass jeder Benutzer einen eindeutigen Session-Token hat"""
-    if 'user_token' not in session:
-        session['user_token'] = secrets.token_urlsafe(32)
-        session.permanent = True
-
-
 def current_user():
-    """Hole den aktuellen Benutzer basierend auf Session-Token"""
-    token = session.get('user_token')
-    if not token:
-        session['user_token'] = secrets.token_urlsafe(32)
-        token = session['user_token']
+    """Hole den aktuellen Benutzer basierend auf Session"""
+    if 'user' not in session:
+        return None
+    
+    username = session['user']['name']
     
     try:
-        u = get_or_create_user_by_token(token)
+        u = get_or_create_user_by_name(username)
     except OperationalError:
         ensure_db_ready()
-        u = get_or_create_user_by_token(token)
+        u = get_or_create_user_by_name(username)
     
     return u
 
 
 # =========================
-# Routes
+# Auth Routes
+# =========================
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """Registrierung neuer Benutzer"""
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        if not username or not password:
+            return render_template('register.html', error='Bitte Nutzername und Passwort angeben')
+        
+        users = load_users()
+        if username in users:
+            return render_template('register.html', error='Benutzer existiert bereits')
+        
+        users[username] = {'pw': generate_password_hash(password)}
+        save_users(users)
+        
+        # nach Registrierung direkt zum Login weiterleiten
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login gegen data/users.json"""
+    next_url = request.args.get('next') or url_for('index')
+    
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        
+        users = load_users()
+        user = users.get(username)
+        
+        if user and check_password_hash(user.get('pw', ''), password):
+            session['user'] = {'name': username}
+            session.permanent = True
+            return redirect(next_url)
+        
+        return render_template('login.html', error='Ungültige Zugangsdaten', next=next_url)
+    
+    return render_template('login.html', next=next_url)
+
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('login'))
+
+
+# =========================
+# Routes (Protected)
 # =========================
 @app.route('/')
+@login_required
 def index():
     today = datetime.now(TIMEZONE).date()
     u = current_user()
@@ -284,6 +364,7 @@ def index():
 
 @app.route('/week')
 @app.route('/week/<int:year>/<int:week>')
+@login_required
 def week_view(year=None, week=None):
     """Wochenansicht mit Statistiken"""
     today = datetime.now(TIMEZONE).date()
@@ -362,6 +443,7 @@ def week_view(year=None, week=None):
 
 
 @app.route('/settings')
+@login_required
 def settings():
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
@@ -381,6 +463,7 @@ def settings():
 # API - Alle mit User-Isolation!
 # =========================
 @app.route('/api/habits', methods=['GET'])
+@login_required
 def api_get_habits():
     u = current_user()
     habits = Habit.query.filter_by(user_id=u.id).order_by(Habit.position).all()
@@ -394,6 +477,7 @@ def api_get_habits():
 
 
 @app.route('/api/habits', methods=['POST'])
+@login_required
 def api_create_habit():
     u = current_user()
     data = request.get_json()
@@ -411,6 +495,7 @@ def api_create_habit():
 
 
 @app.route('/api/habits/<int:habit_id>', methods=['PUT'])
+@login_required
 def api_update_habit(habit_id):
     u = current_user()
     habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
@@ -432,6 +517,7 @@ def api_update_habit(habit_id):
 
 
 @app.route('/api/habits/<int:habit_id>', methods=['DELETE'])
+@login_required
 def api_delete_habit(habit_id):
     u = current_user()
     habit = Habit.query.filter_by(id=habit_id, user_id=u.id).first()
@@ -443,6 +529,7 @@ def api_delete_habit(habit_id):
 
 
 @app.route('/api/toggle', methods=['POST'])
+@login_required
 def api_toggle():
     u = current_user()
     data = request.get_json()
@@ -465,15 +552,6 @@ def api_toggle():
     return jsonify({'success': True, 'completed': entry.completed})
 
 
-@app.route('/api/user/reset', methods=['POST'])
-def api_reset_session():
-    """Ermöglicht das Zurücksetzen der Session (neuer Benutzer)"""
-    session.clear()
-    return jsonify({'success': True, 'message': 'Session zurückgesetzt'})
-
-
 if __name__ == '__main__':
     ensure_db_ready()
     app.run(debug=True, host='0.0.0.0', port=5000)
-
-
