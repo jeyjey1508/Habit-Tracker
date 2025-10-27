@@ -13,6 +13,9 @@
   {% endif %}
 
   <form method="post" class="form">
+    <!-- CSRF-Token für Flask-WTF -->
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
     <div class="form-row">
       <label for="username">Nutzername</label>
       <input id="username" name="username" type="text" required autofocus>
