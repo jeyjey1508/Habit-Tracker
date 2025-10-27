@@ -415,3 +415,60 @@ d-sub{background:var(--surface); border:1px solid var(--border); border-radius:.
 }
 .card-header{display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap}
 .car
+
+/* === Fix für die Wochen-Tabelle: Zellen nicht nach unten stapeln === */
+.week-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.week-table thead,
+.week-table tbody,
+.week-table tr,
+.week-table th,
+.week-table td {
+  display: table-row-group;
+}
+
+.week-table tr { display: table-row; }
+.week-table th,
+.week-table td {
+  display: table-cell !important;
+  vertical-align: middle;
+  padding: 0.5rem 0.6rem;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.habit-checkbox.disabled {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid rgba(0,0,0,0.06);
+  background: transparent;
+  pointer-events: none;
+}
+
+.habit-item .checkbox-visual {
+  display: inline-block;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.habit-item.completed .checkbox-visual {
+  opacity: 1;
+}
+
+.week-table th,
+.week-table td {
+  display: table-cell !important;
+}
